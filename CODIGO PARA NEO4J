@@ -1,0 +1,152 @@
+#CONSTRAINTS
+
+CREATE CONSTRAINT org_id IF NOT EXISTS
+FOR (o:Organism) REQUIRE o.id IS UNIQUE;
+
+CREATE CONSTRAINT gene_key IF NOT EXISTS
+FOR (g:Gene) REQUIRE g.key IS UNIQUE;
+
+CREATE CONSTRAINT tx_key IF NOT EXISTS
+FOR (t:Transcription) REQUIRE t.key IS UNIQUE;
+
+CREATE CONSTRAINT og_id IF NOT EXISTS
+FOR (og:OrthologGroup) REQUIRE og.id IS UNIQUE;
+
+#PARA CARGAR DESDE GITHUB 
+:param BASE_RAW => 'https://raw.githubusercontent.com/USUARIO/REPO/main'; #CAMBIAR USUARIO Y REPO
+
+#CREAR ORGANISMOS
+UNWIND ['Ecoli','Salmon','Bacsu','Pseudo','Staphi','Myctu'] AS org
+MERGE (:Organism {id: org}); #ACA LA IDEA ES CAMBIAR LO QUE ESTA EN UNWIND PARA CAARGAR MAS ORGANISMOS
+
+
+#CODIGO PARA CARGAR LOS TSV QUE CONTIENEN LOS GRUPOS ORTOLOGOS, CREAR RELACIONES Y PROPIEDADES RELACIONADAS A ESTO
+UNWIND [
+  // -------- REGULADORES (TF) --------
+  {org:'Ecoli',  file:'ECOLI_REGULADORES_gene_to_rootOG_clean.tsv', role:'TF'},
+  {org:'Salmon', file:'SALMON_REGULADORES_gene_to_rootOG_clean.tsv', role:'TF'},
+  {org:'Bacsu',  file:'BACSU_REGULADORES_gene_to_rootOG_clean.tsv', role:'TF'},
+  {org:'Pseudo', file:'PSEUDO_REGULADORES_gene_to_rootOG_clean.tsv', role:'TF'},
+  {org:'Staphi',  file:'STAPH_REGULADORES_gene_to_rootOG_clean.tsv', role:'TF'},
+  {org:'Myctu',  file:'MYCTU_REGULADORES_gene_to_rootOG_clean.tsv', role:'TF'},
+
+  // -------- REGULADOS (TG) --------
+  {org:'Ecoli',  file:'ECOLI_REGULADOS_gene_to_rootOG_clean.tsv', role:'TG'},
+  {org:'Salmon', file:'SALMON_REGULADOS_gene_to_rootOG_clean.tsv', role:'TG'},
+  {org:'Bacsu',  file:'BACSU_REGULADOS_gene_to_rootOG_clean.tsv', role:'TG'},
+  {org:'Pseudo', file:'PSEUDO_REGULADOS_gene_to_rootOG_clean.tsv', role:'TG'},
+  {org:'Staphi',  file:'STAPH_REGULADOS_gene_to_rootOG_clean.tsv', role:'TG'},
+  {org:'Myctu',  file:'MYCTU_REGULADOS_gene_to_rootOG_clean.tsv', role:'TG'}    #ACA LA IDEA ES CAMBIAR EL NOMBRE DE LOS ARCHIVOS SEGUN COMO UNO LOS HAYA GUARDADO, YO LOS GUARDE ASI EN MI PC
+] AS src
+
+LOAD CSV WITH HEADERS FROM ($BASE_RAW + '/' + src.file) AS row
+FIELDTERMINATOR '\t'
+
+WITH src, row
+WHERE row.gene_id IS NOT NULL AND row.root_og IS NOT NULL AND row.root_og <> ""
+
+MERGE (o:Organism {id: src.org})
+
+MERGE (g:Gene {key: src.org + '|' + row.gene_id})
+  ON CREATE SET g.id = row.gene_id, g.org = src.org
+SET g.is_tf = coalesce(g.is_tf,false) OR (src.role = 'TF'),
+    g.is_tg = coalesce(g.is_tg,false) OR (src.role = 'TG')
+
+MERGE (og:OrthologGroup {id: row.root_og})
+
+MERGE (o)-[:HAS_GENE]->(g)
+MERGE (g)-[:IN_OG]->(og);
+
+
+#CODIGO PARA CARGAR LAS INTERACCIONES, LAS DE LAS 6 BACTERIAS QUE ESTAN EN EL ARTICULO
+
+UNWIND [
+  {org:'Ecoli',  file:'ecoli.txt'},
+  {org:'Salmon', file:'salmonella.txt'},
+  {org:'Bacsu',  file:'bacillus.txt'},
+  {org:'Pseudo', file:'pseudo.txt'},
+  {org:'Staphi',  file:'estafi.txt'},
+  {org:'Myctu',  file:'Myctu.txt'} #ACA LO MISMO QUE ANTES, ASI ES COMO LAS GUARDE YO
+] AS src
+
+LOAD CSV FROM ($BASE_RAW + '/' + src.file) AS row
+FIELDTERMINATOR '\t'
+
+WITH src, row
+WHERE size(row) >= 4 AND row[0] <> "" AND row[1] <> "" AND row[2] <> ""
+
+WITH src,
+     replace(trim(row[0]),'"','') AS edge_id,
+     replace(trim(row[1]),'"','') AS tf_id,
+     replace(trim(row[2]),'"','') AS tg_id,
+     replace(trim(row[3]),'"','') AS category,
+     CASE WHEN size(row) > 4 THEN replace(trim(row[4]),'"','') ELSE null END AS ref_orgs,
+     CASE WHEN size(row) > 5 THEN replace(trim(row[5]),'"','') ELSE null END AS ref_ids,
+     CASE WHEN size(row) > 6 THEN replace(trim(row[6]),'"','') ELSE null END AS n_orgs
+
+MERGE (o:Organism {id: src.org})
+
+MERGE (tf:Gene {key: src.org + '|' + tf_id})
+  ON CREATE SET tf.id = tf_id, tf.org = src.org
+MERGE (tg:Gene {key: src.org + '|' + tg_id})
+  ON CREATE SET tg.id = tg_id, tg.org = src.org
+
+MERGE (o)-[:HAS_GENE]->(tf)
+MERGE (o)-[:HAS_GENE]->(tg)
+
+MERGE (t:Transcription {key: src.org + '|' + edge_id})
+  ON CREATE SET t.id = edge_id, t.org = src.org
+SET t.category = category,
+    t.ref_orgs_raw = ref_orgs,
+    t.ref_ids_raw  = ref_ids,
+    t.n_orgs = CASE WHEN n_orgs IS NULL OR n_orgs = "" OR n_orgs = "NULL"
+                    THEN null ELSE toInteger(n_orgs) END
+
+MERGE (o)-[:HAS_TRANSCRIPTION]->(t)
+MERGE (t)-[:HAS_TF]->(tf)
+MERGE (t)-[:HAS_TG]->(tg)
+
+// relación directa TF->TG 
+MERGE (tf)-[r:REGULATES {key: src.org + '|' + edge_id}]->(tg)
+SET r.edge_id = edge_id,
+    r.org = src.org,
+    r.category = category;
+
+
+
+#CODIGO PARA CREAR RELACIONES HOMOLOGOUS TO 
+
+
+MATCH (t:Transcription)
+WITH t,
+     [x IN split(coalesce(t.ref_orgs_raw,''), ',') | replace(trim(x),'"','')] AS orgs,
+     [y IN split(coalesce(t.ref_ids_raw ,''), ',') | replace(trim(y),'"','')] AS ids
+WITH t, orgs, ids, range(0, size(orgs)-1) AS idxs
+UNWIND idxs AS i
+WITH t, orgs[i] AS refOrg, ids[i] AS refId
+WHERE refOrg <> '' AND refId <> ''
+  AND refOrg <> 'NOT_REFR_ORG'
+  AND refId  <> 'NOT_REFR_NUM'
+  AND refId  <> 'NULL'
+MATCH (t2:Transcription {key: refOrg + '|' + refId})
+MERGE (t)-[:HOMOLOGOUS_TO]->(t2);
+
+
+#CREAR RELACION OG_REGULATES_OG_BY_TF
+
+MATCH (tf:Gene)-[rel:REGULATES]->(tg:Gene)
+WHERE rel.org IS NOT NULL
+MATCH (tf)-[:IN_OG]->(ogTF:OrthologGroup)
+MATCH (tg)-[:IN_OG]->(ogTG:OrthologGroup)
+
+WITH tf, ogTF, ogTG, rel.org AS org, count(*) AS nEdges
+MERGE (ogTF)-[r:OG_REGULATES_OG_BY_TF {org: org, tf_key: tf.key}]->(ogTG)
+SET r.n = nEdges;
+
+
+
+
+
+
+
+

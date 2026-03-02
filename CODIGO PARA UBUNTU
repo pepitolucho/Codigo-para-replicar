@@ -1,0 +1,80 @@
+#CODIGO PARA INSTALAR MICROMAMBA
+cd ~
+curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
+
+#INICIALIZAR MICROMAMBA EN BASH 
+~/bin/micromamba shell init -s bash -p ~/micromamba #DESPUES DE ESTO HAY QUE CERRAR Y VOLVER A ABRIR LA TERMINAL 
+
+
+#VERIFICAR LA INSTALACIÓN
+micromamba --version
+
+
+#CREAR ENTORNO EGGNOG Y DIAMOND
+micromamba create -n eggnog -c conda-forge -c bioconda eggnog-mapper diamond python=3.10 -y
+
+#ACTIVAR EL ENTORNO
+micromamba activate eggnog
+
+#CODIGO PARA VERIFICAR
+which emapper.py
+which diamond
+
+#CODIGO PARA CREAR LA CARPETA PARA CARGAR LA BASE DE DATOS DE EGGNOG 
+mkdir -p ~/eggnog_db
+
+#CODIGO PARA DESCARGAR LA BASE DE DATOS
+download_eggnog_data.py -M --data_dir ~/eggnog_db
+
+#TEST PARA VER SI ESTA BIEN 
+emapper.py -h | head  #TIENE QUE IMPRIMIR HELP
+
+
+#ACCEDEMOS A UNA CARPETA QUE CREAMOS ANTES, LLAMADA fastas DONDE DEJAMOS TODOS LOS ARCHIVOS FASTAS  
+cd ~/fastas
+
+#CODIGO PARA GENERAR ARCHIVOS ANNOTATIONS DESDE UN ARCHIVO FASTA
+for f in *.fasta *.fa *.faa; do
+  [ -f "$f" ] || continue
+  base="${f%.*}"
+  echo ">>> Procesando: $f"
+  emapper.py \
+    -i "$f" \
+    --itype proteins \
+    -m diamond \
+    --data_dir ~/eggnog_db \
+    --cpu 4 \
+    -o "$base"
+done
+
+#CREAR CARPETA PARA EXTRAER LOS ARCHIVOS TSV
+mkdir -p rootOG_tsv
+
+
+#CODIGO PARA CREAR LOS ARCHIVOS TSV QUE MUESTRAN GEN CON SU GRUPO ORTOLOGO
+for ann in *.emapper.annotations; do
+  [ -e "$ann" ] || continue
+  base="${ann%.emapper.annotations}"
+  out="rootOG_tsv/${base}_gene_to_rootOG_clean.tsv"
+
+  echo ">>> $ann -> $out"
+
+  {
+    echo -e "gene_id\troot_og"
+    awk -F'\t' '
+      BEGIN{OFS="\t"}
+      $1 ~ /^#/ {next}
+      {
+        split($2,a,"|")
+        split(a[1],b,"@")
+        root=b[1]
+        if(root!="") print $1, root
+      }
+    ' "$ann"
+  } > "$out"
+done
+
+
+
+
+  

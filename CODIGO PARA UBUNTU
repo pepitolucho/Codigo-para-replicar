@@ -1,9 +1,15 @@
+#CODIGO PARA INSTALAR BZIP2
+sudo apt update
+sudo apt install bzip2 -y
+
+
 #CODIGO PARA INSTALAR MICROMAMBA
 cd ~
 curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
 
+
 #INICIALIZAR MICROMAMBA EN BASH 
-~/bin/micromamba shell init -s bash -p ~/micromamba #DESPUES DE ESTO HAY QUE CERRAR Y VOLVER A ABRIR LA TERMINAL 
+~/bin/micromamba shell init -s bash ~/micromamba #DESPUES DE ESTO HAY QUE CERRAR Y VOLVER A ABRIR LA TERMINAL 
 
 
 #VERIFICAR LA INSTALACIÓN
@@ -13,31 +19,51 @@ micromamba --version
 #CREAR ENTORNO EGGNOG Y DIAMOND
 micromamba create -n eggnog -c conda-forge -c bioconda eggnog-mapper diamond python=3.10 -y
 
+
 #ACTIVAR EL ENTORNO
 micromamba activate eggnog
+
 
 #CODIGO PARA VERIFICAR
 which emapper.py
 which diamond
 
+
 #CODIGO PARA CREAR LA CARPETA PARA CARGAR LA BASE DE DATOS DE EGGNOG 
 mkdir -p ~/eggnog_db
 
+
 #CODIGO PARA DESCARGAR LA BASE DE DATOS
-download_eggnog_data.py -M --data_dir ~/eggnog_db
+cd ~/eggnog_db
 
-#TEST PARA VER SI ESTA BIEN 
-emapper.py -h | head  #TIENE QUE IMPRIMIR HELP
+# base principal (~6GB)
+wget -O eggnog.db.gz http://eggnog5.embl.de/download/emapperdb-5.0.2/eggnog.db.gz
+gunzip eggnog.db.gz
+
+# base taxonómica
+wget -O eggnog.taxa.tar.gz http://eggnog5.embl.de/download/emapperdb-5.0.2/eggnog.taxa.tar.gz
+tar -zxf eggnog.taxa.tar.gz
+rm eggnog.taxa.tar.gz
+
+# base DIAMOND (~4GB)
+wget -O eggnog_proteins.dmnd.gz http://eggnog5.embl.de/download/emapperdb-5.0.2/eggnog_proteins.dmnd.gz
+gunzip eggnog_proteins.dmnd.gz
 
 
-#ACCEDEMOS A UNA CARPETA QUE CREAMOS ANTES, LLAMADA fastas DONDE DEJAMOS TODOS LOS ARCHIVOS FASTAS  
+
+#CREAMOS UNA CARPETA LLAMADA fastas DONDE DEJAMOS TODOS LOS ARCHIVOS FASTAS  
+mkdir -p ~/fastas
 cd ~/fastas
 
+
 #CODIGO PARA GENERAR ARCHIVOS ANNOTATIONS DESDE UN ARCHIVO FASTA
+cd ~/fastas
+
 for f in *.fasta *.fa *.faa; do
   [ -f "$f" ] || continue
   base="${f%.*}"
   echo ">>> Procesando: $f"
+
   emapper.py \
     -i "$f" \
     --itype proteins \
@@ -47,31 +73,34 @@ for f in *.fasta *.fa *.faa; do
     -o "$base"
 done
 
-#CREAR CARPETA PARA EXTRAER LOS ARCHIVOS TSV
-mkdir -p rootOG_tsv
 
 
 #CODIGO PARA CREAR LOS ARCHIVOS TSV QUE MUESTRAN GEN CON SU GRUPO ORTOLOGO
-for ann in *.emapper.annotations; do
-  [ -e "$ann" ] || continue
-  base="${ann%.emapper.annotations}"
-  out="rootOG_tsv/${base}_gene_to_rootOG_clean.tsv"
+cd ~/fastas
 
-  echo ">>> $ann -> $out"
+for f in *.emapper.annotations; do
+  [ -f "$f" ] || continue
+  base="${f%.emapper.annotations}"
+  echo ">>> Extrayendo root OG de: $f"
 
-  {
-    echo -e "gene_id\troot_og"
-    awk -F'\t' '
-      BEGIN{OFS="\t"}
-      $1 ~ /^#/ {next}
-      {
-        split($2,a,"|")
-        split(a[1],b,"@")
+  awk -F'\t' 'BEGIN{OFS="\t"}
+  $0 !~ /^#/ {
+    gene=$1
+    ogs=$5
+    root=""
+
+    n=split(ogs, a, ",")
+    for (i=1; i<=n; i++) {
+      if (a[i] ~ /@1\|root/) {
+        split(a[i], b, "@")
         root=b[1]
-        if(root!="") print $1, root
       }
-    ' "$ann"
-  } > "$out"
+    }
+
+    if (root != "") print gene, root
+  }' "$f" > "${base}_gene_to_rootOG.tsv"
+
+  { echo -e "gene_id\troot_og"; cat "${base}_gene_to_rootOG.tsv"; } > "${base}_gene_to_rootOG_clean.tsv"
 done
 
 
